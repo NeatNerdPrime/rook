@@ -18,9 +18,9 @@ include ../image.mk
 # Image Build Options
 
 ifeq ($(GOARCH),amd64)
-CEPH_VERSION = v16.2.0-20210401
+CEPH_VERSION = v16.2.5-20210708
 else
-CEPH_VERSION = v16.2.0-20210401
+CEPH_VERSION = v16.2.5-20210708
 endif
 BASEIMAGE = ceph/ceph-$(GOARCH):$(CEPH_VERSION)
 CEPH_IMAGE = $(BUILD_REGISTRY)/ceph-$(GOARCH)
@@ -82,14 +82,16 @@ do.build: generate-csv-ceph-templates
 
 generate-csv-ceph-templates: $(OPERATOR_SDK) $(YQ)
 	@if [ ! "$(INCLUDE_CSV_TEMPLATES)" = "" ]; then\
-		BEFORE_GEN_CRD_SIZE=$$(wc -l < ../../cluster/examples/kubernetes/ceph/crds.yaml);\
-		$(MAKE) -C ../.. NO_OB_OBC_VOL_GEN=true MAX_DESC_LEN=0 crds;\
-		AFTER_GEN_CRD_SIZE=$$(wc -l < ../../cluster/examples/kubernetes/ceph/crds.yaml);\
-		if [ "$$BEFORE_GEN_CRD_SIZE" -le "$$AFTER_GEN_CRD_SIZE" ]; then\
-			echo "the new crd file must be smaller since the description fields were stripped!";\
-			echo "length before $$BEFORE_GEN_CRD_SIZE";\
-			echo "length after $$AFTER_GEN_CRD_SIZE";\
-			exit 1;\
+		if [ "$(GOARCH)" = amd64 ]; then\
+			BEFORE_GEN_CRD_SIZE=$$(wc -l < ../../cluster/examples/kubernetes/ceph/crds.yaml);\
+			$(MAKE) -C ../.. NO_OB_OBC_VOL_GEN=true MAX_DESC_LEN=0 crds;\
+			AFTER_GEN_CRD_SIZE=$$(wc -l < ../../cluster/examples/kubernetes/ceph/crds.yaml);\
+			if [ "$$BEFORE_GEN_CRD_SIZE" -le "$$AFTER_GEN_CRD_SIZE" ]; then\
+				echo "the new crd file must be smaller since the description fields were stripped!";\
+				echo "length before $$BEFORE_GEN_CRD_SIZE";\
+				echo "length after $$AFTER_GEN_CRD_SIZE";\
+				exit 1;\
+			fi;\
 		fi;\
 		../../cluster/olm/ceph/generate-rook-csv-templates.sh;\
 	fi

@@ -30,6 +30,7 @@ import (
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -49,8 +50,11 @@ func (c *Cluster) getLabels(monConfig *monConfig, canary, includeNewLabels bool)
 		labels["mon_canary"] = "true"
 	}
 	if includeNewLabels {
-		if c.monVolumeClaimTemplate(monConfig) != nil {
+		monVolumeClaimTemplate := c.monVolumeClaimTemplate(monConfig)
+		if monVolumeClaimTemplate != nil {
+			size := monVolumeClaimTemplate.Spec.Resources.Requests[v1.ResourceStorage]
 			labels["pvc_name"] = monConfig.ResourceName
+			labels["pvc_size"] = size.String()
 		}
 		if monConfig.Zone != "" {
 			labels["stretch-zone"] = monConfig.Zone
@@ -208,8 +212,8 @@ func (c *Cluster) makeMonPod(monConfig *monConfig, canary bool) (*corev1.Pod, er
 
 	if c.spec.Network.IsHost() {
 		pod.Spec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
-	} else if c.spec.Network.NetworkSpec.IsMultus() {
-		if err := k8sutil.ApplyMultus(c.spec.Network.NetworkSpec, &pod.ObjectMeta); err != nil {
+	} else if c.spec.Network.IsMultus() {
+		if err := k8sutil.ApplyMultus(c.spec.Network, &pod.ObjectMeta); err != nil {
 			return nil, err
 		}
 	}
@@ -311,6 +315,15 @@ func (c *Cluster) makeMonDaemonContainer(monConfig *monConfig) corev1.Container 
 		Resources:     cephv1.GetMonResources(c.spec.Resources),
 		LivenessProbe: controller.GenerateLivenessProbeExecDaemon(config.MonType, monConfig.DaemonName),
 		WorkingDir:    config.VarLogCephDir,
+	}
+
+	if monConfig.Zone != "" {
+		desiredLocation := fmt.Sprintf("%s=%s", c.stretchFailureDomainName(), monConfig.Zone)
+		container.Args = append(container.Args, []string{"--set-crush-location", desiredLocation}...)
+		if monConfig.Zone == c.getArbiterZone() {
+			// remember the arbiter mon to be set later in the reconcile after the OSDs are configured
+			c.arbiterMon = monConfig.DaemonName
+		}
 	}
 
 	// If the liveness probe is enabled

@@ -20,6 +20,8 @@ package object
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"reflect"
 	"syscall"
 
@@ -33,6 +35,7 @@ import (
 	"github.com/rook/rook/pkg/operator/ceph/pool"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	"github.com/rook/rook/pkg/util/exec"
+	v1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -309,11 +312,54 @@ func BuildDomainName(name, namespace string) string {
 	return fmt.Sprintf("%s-%s.%s.%s", AppName, name, namespace, svcDNSSuffix)
 }
 
-// buildDNSEndpoint build the dns name to reach out the service endpoint
-func buildDNSEndpoint(domainName string, port int32, secure bool) string {
+// BuildDNSEndpoint build the dns name to reach out the service endpoint
+func BuildDNSEndpoint(domainName string, port int32, secure bool) string {
 	httpPrefix := "http"
 	if secure {
 		httpPrefix = "https"
 	}
 	return fmt.Sprintf("%s://%s:%d", httpPrefix, domainName, port)
+}
+
+// GetTLSCACert fetch cacert for internal RGW requests
+func GetTlsCaCert(objContext *Context, objectStoreSpec *cephv1.ObjectStoreSpec) ([]byte, error) {
+	ctx := context.TODO()
+	var (
+		tlsCert []byte
+		err     error
+	)
+
+	if objectStoreSpec.Gateway.SSLCertificateRef != "" {
+		tlsSecretCert, err := objContext.Context.Clientset.CoreV1().Secrets(objContext.clusterInfo.Namespace).Get(ctx, objectStoreSpec.Gateway.SSLCertificateRef, metav1.GetOptions{})
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get secret %s containing TLS certificate defined in %s", objectStoreSpec.Gateway.SSLCertificateRef, objContext.Name)
+		}
+		if tlsSecretCert.Type == v1.SecretTypeOpaque {
+			tlsCert = tlsSecretCert.Data[certKeyName]
+		} else if tlsSecretCert.Type == v1.SecretTypeTLS {
+			tlsCert = tlsSecretCert.Data[v1.TLSCertKey]
+		}
+	} else if objectStoreSpec.GetServiceServingCert() != "" {
+		tlsCert, err = ioutil.ReadFile(ServiceServingCertCAFile)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to fetch TLS certificate from %q", ServiceServingCertCAFile)
+		}
+	}
+
+	return tlsCert, nil
+}
+
+func GenObjectStoreHTTPClient(objContext *Context, spec *cephv1.ObjectStoreSpec) (*http.Client, []byte, error) {
+	nsName := fmt.Sprintf("%s/%s", objContext.clusterInfo.Namespace, objContext.Name)
+	c := &http.Client{}
+	tlsCert := []byte{}
+	if spec.IsTLSEnabled() {
+		var err error
+		tlsCert, err = GetTlsCaCert(objContext, spec)
+		if err != nil {
+			return nil, tlsCert, errors.Wrapf(err, "failed to fetch CA cert to establish TLS connection with object store %q", nsName)
+		}
+		c.Transport = BuildTransportTLS(tlsCert)
+	}
+	return c, tlsCert, nil
 }

@@ -29,7 +29,6 @@ import (
 	"github.com/coreos/pkg/capnslog"
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
-	rookv1 "github.com/rook/rook/pkg/apis/rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	cephclientfake "github.com/rook/rook/pkg/daemon/ceph/client/fake"
@@ -110,7 +109,7 @@ func testOSDIntegration(t *testing.T) {
 	}()
 	// stub out the conditionExportFunc to do nothing. we do not have a fake Rook interface that
 	// allows us to interact with a CephCluster resource like the fake K8s clientset.
-	updateConditionFunc = func(c *clusterd.Context, namespaceName types.NamespacedName, conditionType cephv1.ConditionType, status corev1.ConditionStatus, reason cephv1.ClusterReasonType, message string) {
+	updateConditionFunc = func(c *clusterd.Context, namespaceName types.NamespacedName, conditionType cephv1.ConditionType, status corev1.ConditionStatus, reason cephv1.ConditionReason, message string) {
 		// do nothing
 	}
 
@@ -206,13 +205,13 @@ func testOSDIntegration(t *testing.T) {
 		},
 		DataDirHostPath: context.ConfigDir,
 		// This storage spec should... (see inline)
-		Storage: rookv1.StorageScopeSpec{
+		Storage: cephv1.StorageScopeSpec{
 			UseAllNodes: true,
-			Selection: rookv1.Selection{
+			Selection: cephv1.Selection{
 				// ... create 2 osd on each of the 3 nodes (6 total)
 				DeviceFilter: "vd[ab]",
 			},
-			StorageClassDeviceSets: []rookv1.StorageClassDeviceSet{
+			StorageClassDeviceSets: []cephv1.StorageClassDeviceSet{
 				// ... create 6 portable osds
 				newDummyStorageClassDeviceSet("portable-set", namespace, 6, true, "ec2"),
 				// ... create 3 local, non-portable osds, one on each node
@@ -448,7 +447,7 @@ func testOSDIntegration(t *testing.T) {
 	})
 
 	t.Run("failures from improperly formatted StorageClassDeviceSet", func(t *testing.T) {
-		newSCDS := rookv1.StorageClassDeviceSet{
+		newSCDS := cephv1.StorageClassDeviceSet{
 			Name:                 "new",
 			Count:                3,
 			Portable:             true,
@@ -558,6 +557,11 @@ func osdIntegrationTestExecutor(t *testing.T, clientset *fake.Clientset, namespa
 				if args[1] == "tree" {
 					return cephclientfake.OsdTreeOutput(3, 3), nil // fake output for cluster with 3 nodes having 3 OSDs
 				}
+				if args[1] == "crush" {
+					if args[2] == "get-device-class" {
+						return cephclientfake.OSDDeviceClassOutput(args[3]), nil
+					}
+				}
 			}
 			if args[0] == "versions" {
 				// the update deploy code only cares about the mons from the ceph version command results
@@ -599,8 +603,8 @@ func (g *osdIDGenerator) osdID(t *testing.T, namedResource string) int {
 
 func newDummyStorageClassDeviceSet(
 	name string, namespace string, count int, portable bool, storageClassName string,
-) rookv1.StorageClassDeviceSet {
-	return rookv1.StorageClassDeviceSet{
+) cephv1.StorageClassDeviceSet {
+	return cephv1.StorageClassDeviceSet{
 		Name:     name,
 		Count:    count,
 		Portable: portable,

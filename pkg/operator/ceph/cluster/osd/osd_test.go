@@ -23,7 +23,6 @@ import (
 
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
-	rookv1 "github.com/rook/rook/pkg/apis/rook.io/v1"
 	fakeclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
 	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
@@ -133,7 +132,7 @@ func TestAddRemoveNode(t *testing.T) {
 	}()
 	// stub out the conditionExportFunc to do nothing. we do not have a fake Rook interface that
 	// allows us to interact with a CephCluster resource like the fake K8s clientset.
-	updateConditionFunc = func(c *clusterd.Context, namespaceName types.NamespacedName, conditionType cephv1.ConditionType, status corev1.ConditionStatus, reason cephv1.ClusterReasonType, message string) {
+	updateConditionFunc = func(c *clusterd.Context, namespaceName types.NamespacedName, conditionType cephv1.ConditionType, status corev1.ConditionStatus, reason cephv1.ConditionReason, message string) {
 		// do nothing
 	}
 
@@ -171,12 +170,12 @@ func TestAddRemoveNode(t *testing.T) {
 	}
 	spec := cephv1.ClusterSpec{
 		DataDirHostPath: context.ConfigDir,
-		Storage: rookv1.StorageScopeSpec{
-			Nodes: []rookv1.Node{
+		Storage: cephv1.StorageScopeSpec{
+			Nodes: []cephv1.Node{
 				{
 					Name: nodeName,
-					Selection: rookv1.Selection{
-						Devices: []rookv1.Device{{Name: "sdx"}},
+					Selection: cephv1.Selection{
+						Devices: []cephv1.Device{{Name: "sdx"}},
 					},
 				},
 			},
@@ -239,6 +238,9 @@ func TestAddRemoveNode(t *testing.T) {
 					if args[2] == "rm" {
 						return "", nil
 					}
+					if args[2] == "get-device-class" {
+						return cephclientfake.OSDDeviceClassOutput(args[3]), nil
+					}
 				}
 				if args[1] == "out" {
 					return "", nil
@@ -269,7 +271,7 @@ func TestAddRemoveNode(t *testing.T) {
 	}
 
 	// modify the storage spec to remove the node from the cluster
-	spec.Storage.Nodes = []rookv1.Node{}
+	spec.Storage.Nodes = []cephv1.Node{}
 	c = New(context, clusterInfo, spec, "myversion")
 
 	// reset the orchestration status watcher
@@ -328,12 +330,12 @@ func TestAddNodeFailure(t *testing.T) {
 	context := &clusterd.Context{Clientset: clientset, ConfigDir: "/var/lib/rook", Executor: &exectest.MockExecutor{}, RequestCancelOrchestration: abool.New()}
 	spec := cephv1.ClusterSpec{
 		DataDirHostPath: context.ConfigDir,
-		Storage: rookv1.StorageScopeSpec{
-			Nodes: []rookv1.Node{
+		Storage: cephv1.StorageScopeSpec{
+			Nodes: []cephv1.Node{
 				{
 					Name: nodeName,
-					Selection: rookv1.Selection{
-						Devices: []rookv1.Device{{Name: "sdx"}},
+					Selection: cephv1.Selection{
+						Devices: []cephv1.Device{{Name: "sdx"}},
 					},
 				},
 			},
@@ -421,15 +423,16 @@ func TestGetOSDInfo(t *testing.T) {
 
 	node := "n1"
 	location := "root=default host=myhost zone=myzone"
-	osd1 := OSDInfo{ID: 3, UUID: "osd-uuid", BlockPath: "dev/logical-volume-path", CVMode: "raw", Location: location}
+	osd1 := OSDInfo{ID: 3, UUID: "osd-uuid", BlockPath: "dev/logical-volume-path", CVMode: "raw", Location: location, TopologyAffinity: "topology.rook.io/rack=rack0"}
 	osd2 := OSDInfo{ID: 3, UUID: "osd-uuid", BlockPath: "vg1/lv1", CVMode: "lvm", LVBackedPV: true}
 	osd3 := OSDInfo{ID: 3, UUID: "osd-uuid", BlockPath: "", CVMode: "raw"}
 	osdProp := osdProperties{
 		crushHostname: node,
 		pvc:           corev1.PersistentVolumeClaimVolumeSource{ClaimName: "pvc"},
-		selection:     rookv1.Selection{},
+		selection:     cephv1.Selection{},
 		resources:     corev1.ResourceRequirements{},
 		storeConfig:   config.StoreConfig{},
+		portable:      true,
 	}
 	dataPathMap := &provisionConfig{
 		DataPathMap: opconfig.NewDatalessDaemonDataPathMap(c.clusterInfo.Namespace, c.spec.DataDirHostPath),
@@ -442,6 +445,8 @@ func TestGetOSDInfo(t *testing.T) {
 		assert.Equal(t, osd1.BlockPath, osdInfo1.BlockPath)
 		assert.Equal(t, osd1.CVMode, osdInfo1.CVMode)
 		assert.Equal(t, location, osdInfo1.Location)
+		assert.Equal(t, osd1.TopologyAffinity, osdInfo1.TopologyAffinity)
+		osdProp.portable = false
 
 		d2, _ := c.makeDeployment(osdProp, osd2, dataPathMap)
 		osdInfo2, _ := c.getOSDInfo(d2)
@@ -466,9 +471,9 @@ func TestGetOSDInfo(t *testing.T) {
 		osd5 := OSDInfo{ID: 3, UUID: "osd-uuid", BlockPath: "vg1/lv1", CVMode: "lvm"}
 		osdProp = osdProperties{
 			crushHostname: node,
-			devices:       []rookv1.Device{},
+			devices:       []cephv1.Device{},
 			pvc:           corev1.PersistentVolumeClaimVolumeSource{},
-			selection: rookv1.Selection{
+			selection: cephv1.Selection{
 				UseAllDevices: &useAllDevices,
 			},
 			resources:      corev1.ResourceRequirements{},
@@ -495,7 +500,7 @@ func TestOSDPlacement(t *testing.T) {
 	assert.Nil(t, result.NodeAffinity)
 
 	// the osd daemon placement is specified
-	prop.placement = rookv1.Placement{NodeAffinity: &corev1.NodeAffinity{
+	prop.placement = cephv1.Placement{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{
 				{
@@ -517,7 +522,7 @@ func TestOSDPlacement(t *testing.T) {
 	assert.Equal(t, "label1", result.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchExpressions[0].Key)
 
 	// The prepare placement is specified and takes precedence over the osd placement
-	prop.preparePlacement = &rookv1.Placement{NodeAffinity: &corev1.NodeAffinity{
+	prop.preparePlacement = &cephv1.Placement{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{
 				{
@@ -587,7 +592,7 @@ func TestGetOSDInfoWithCustomRoot(t *testing.T) {
 	context := &clusterd.Context{}
 	spec := cephv1.ClusterSpec{
 		DataDirHostPath: "/rook",
-		Storage: rookv1.StorageScopeSpec{
+		Storage: cephv1.StorageScopeSpec{
 			Config: map[string]string{
 				"crushRoot": "custom-root",
 			},
@@ -603,7 +608,7 @@ func TestGetOSDInfoWithCustomRoot(t *testing.T) {
 	osdProp := osdProperties{
 		crushHostname: node,
 		pvc:           corev1.PersistentVolumeClaimVolumeSource{ClaimName: "pvc"},
-		selection:     rookv1.Selection{},
+		selection:     cephv1.Selection{},
 		resources:     corev1.ResourceRequirements{},
 		storeConfig:   config.StoreConfig{},
 	}

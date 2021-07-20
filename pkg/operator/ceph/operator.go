@@ -21,6 +21,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/coreos/pkg/capnslog"
@@ -48,15 +49,15 @@ const (
 	provisionerNameLegacy = "rook.io/block"
 )
 
-var logger = capnslog.NewPackageLogger("github.com/rook/rook", "operator")
-
-// The supported configurations for the volume provisioner
-var provisionerConfigs = map[string]string{
-	provisionerName:       flexvolume.FlexvolumeVendor,
-	provisionerNameLegacy: flexvolume.FlexvolumeVendorLegacy,
-}
-
 var (
+	logger = capnslog.NewPackageLogger("github.com/rook/rook", "operator")
+
+	// The supported configurations for the volume provisioner
+	provisionerConfigs = map[string]string{
+		provisionerName:       flexvolume.FlexvolumeVendor,
+		provisionerNameLegacy: flexvolume.FlexvolumeVendorLegacy,
+	}
+
 	// ImmediateRetryResult Return this for a immediate retry of the reconciliation loop with the same request object.
 	ImmediateRetryResult = reconcile.Result{Requeue: true}
 )
@@ -88,6 +89,7 @@ func New(context *clusterd.Context, volumeAttachmentWrapper attachment.Attachmen
 	}
 	operatorConfigCallbacks := []func() error{
 		o.updateDrivers,
+		o.updateOperatorLogLevel,
 	}
 	addCallbacks := []func() error{
 		o.startDrivers,
@@ -99,6 +101,22 @@ func New(context *clusterd.Context, volumeAttachmentWrapper attachment.Attachmen
 func (o *Operator) cleanup(stopCh chan struct{}) {
 	close(stopCh)
 	o.clusterController.StopWatch()
+}
+
+func (o *Operator) updateOperatorLogLevel() error {
+	rookLogLevel, err := k8sutil.GetOperatorSetting(o.context.Clientset, opcontroller.OperatorSettingConfigMapName, "ROOK_LOG_LEVEL", "INFO")
+	if err != nil {
+		logger.Warningf("failed to load ROOK_LOG_LEVEL. Defaulting to INFO. %v", err)
+		rookLogLevel = "INFO"
+	}
+
+	logLevel, err := capnslog.ParseLevel(strings.ToUpper(rookLogLevel))
+	if err != nil {
+		return errors.Wrapf(err, "failed to load ROOK_LOG_LEVEL %q.", rookLogLevel)
+	}
+
+	capnslog.SetGlobalLogLevel(logLevel)
+	return nil
 }
 
 // Run the operator instance
@@ -222,10 +240,6 @@ func (o *Operator) updateDrivers() error {
 		return errors.Wrap(err, "error getting server version")
 	}
 
-	if err = csi.SetParams(o.context.Clientset); err != nil {
-		return errors.Wrap(err, "failed to configure CSI parameters")
-	}
-
 	if serverVersion.Major < csi.KubeMinMajor || serverVersion.Major == csi.KubeMinMajor && serverVersion.Minor < csi.ProvDeploymentSuppVersion {
 		logger.Infof("CSI drivers only supported in K8s 1.14 or newer. version=%s", serverVersion.String())
 		// disable csi control variables to disable other csi functions
@@ -249,10 +263,6 @@ func (o *Operator) updateDrivers() error {
 	err = csi.CreateCsiConfigMap(o.operatorNamespace, o.context.Clientset, ownerInfo)
 	if err != nil {
 		return errors.Wrap(err, "failed creating csi config map")
-	}
-
-	if err = csi.ValidateCSIParam(); err != nil {
-		return errors.Wrap(err, "invalid csi params")
 	}
 
 	go csi.ValidateAndConfigureDrivers(o.context, o.operatorNamespace, o.rookImage, o.securityAccount, serverVersion, ownerInfo)

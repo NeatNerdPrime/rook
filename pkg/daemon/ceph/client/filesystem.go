@@ -34,6 +34,16 @@ const (
 	MultiFsEnv = "ROOK_ALLOW_MULTIPLE_FILESYSTEMS"
 )
 
+type MDSDump struct {
+	Standbys    []MDSStandBy `json:"standbys"`
+	FileSystems []MDSMap     `json:"filesystems"`
+}
+
+type MDSStandBy struct {
+	Name string `json:"name"`
+	Rank int    `json:"rank"`
+}
+
 // CephFilesystem is a representation of the json structure returned by 'ceph fs ls'
 type CephFilesystem struct {
 	Name           string   `json:"name"`
@@ -122,7 +132,7 @@ func AllowStandbyReplay(context *clusterd.Context, clusterInfo *ClusterInfo, fsN
 }
 
 // CreateFilesystem performs software configuration steps for Ceph to provide a new filesystem.
-func CreateFilesystem(context *clusterd.Context, clusterInfo *ClusterInfo, name, metadataPool string, dataPools []string, force bool) error {
+func CreateFilesystem(context *clusterd.Context, clusterInfo *ClusterInfo, name, metadataPool string, dataPools []string) error {
 	if len(dataPools) == 0 {
 		return errors.New("at least one data pool is required")
 	}
@@ -142,11 +152,7 @@ func CreateFilesystem(context *clusterd.Context, clusterInfo *ClusterInfo, name,
 
 	// create the filesystem
 	args := []string{"fs", "new", name, metadataPool, dataPools[0]}
-	// Force to use pre-existing pools
-	if force {
-		args = append(args, "--force")
-		logger.Infof("Filesystem %q will reuse pre-existing pools", name)
-	}
+
 	_, err = NewCephCommand(context, clusterInfo, args).Run()
 	if err != nil {
 		return errors.Wrapf(err, "failed enabling ceph fs %q", name)
@@ -189,6 +195,39 @@ func SetNumMDSRanks(context *clusterd.Context, clusterInfo *ClusterInfo, fsName 
 		return errors.Wrapf(err, "failed to set filesystem %s num mds ranks (max_mds) to %d", fsName, activeMDSCount)
 	}
 	return nil
+}
+
+// FailAllStandbyReplayMDS: fail all mds in up:standby-replay state
+func FailAllStandbyReplayMDS(context *clusterd.Context, clusterInfo *ClusterInfo, fsName string) error {
+	fs, err := GetFilesystem(context, clusterInfo, fsName)
+	if err != nil {
+		return errors.Wrapf(err, "failed to fail standby-replay MDSes for fs %q", fsName)
+	}
+	for _, info := range fs.MDSMap.Info {
+		if info.State == "up:standby-replay" {
+			if err := FailMDS(context, clusterInfo, info.GID); err != nil {
+				return errors.Wrapf(err, "failed to fail MDS %q for filesystem %q in up:standby-replay state", info.Name, fsName)
+			}
+		}
+	}
+	return nil
+}
+
+// GetMdsIdByRank get mds ID from the given rank
+func GetMdsIdByRank(context *clusterd.Context, clusterInfo *ClusterInfo, fsName string, rank int32) (string, error) {
+	fs, err := GetFilesystem(context, clusterInfo, fsName)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to get ceph fs dump")
+	}
+	gid, ok := fs.MDSMap.Up[fmt.Sprintf("mds_%d", rank)]
+	if !ok {
+		return "", errors.Errorf("failed to get mds gid from rank %d", rank)
+	}
+	info, ok := fs.MDSMap.Info[fmt.Sprintf("gid_%d", gid)]
+	if !ok {
+		return "", errors.Errorf("failed to get mds info for rank %d", rank)
+	}
+	return info.Name, nil
 }
 
 // WaitForActiveRanks waits for the filesystem's number of active ranks to equal the desired count.
@@ -325,4 +364,35 @@ func deleteFSPool(context *clusterd.Context, clusterInfo *ClusterInfo, poolNames
 		return errors.Errorf("pool %d not found", id)
 	}
 	return DeletePool(context, clusterInfo, name)
+}
+
+// WaitForNoStandbys waits for all standbys go away
+func WaitForNoStandbys(context *clusterd.Context, clusterInfo *ClusterInfo, timeout time.Duration) error {
+	err := wait.Poll(3*time.Second, timeout, func() (bool, error) {
+		mdsDump, err := GetMDSDump(context, clusterInfo)
+		if err != nil {
+			logger.Errorf("failed to get fs dump. %v", err)
+			return false, nil
+		}
+		return len(mdsDump.Standbys) == 0, nil
+	})
+
+	if err != nil {
+		return errors.Wrap(err, "timeout waiting for no standbys")
+	}
+	return nil
+}
+
+func GetMDSDump(context *clusterd.Context, clusterInfo *ClusterInfo) (*MDSDump, error) {
+	args := []string{"fs", "dump"}
+	cmd := NewCephCommand(context, clusterInfo, args)
+	buf, err := cmd.Run()
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to dump fs info")
+	}
+	var dump MDSDump
+	if err := json.Unmarshal(buf, &dump); err != nil {
+		return nil, errors.Wrapf(err, "failed to unmarshal fs dump. %s", buf)
+	}
+	return &dump, nil
 }

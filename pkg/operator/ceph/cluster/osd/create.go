@@ -21,7 +21,6 @@ import (
 
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
-	rookv1 "github.com/rook/rook/pkg/apis/rook.io/v1"
 	kms "github.com/rook/rook/pkg/daemon/ceph/osd/kms"
 	osdconfig "github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
 	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
@@ -127,13 +126,11 @@ func (c *createConfig) doneWithStatus(nodeOrPVCName string) {
 // usage of awaitingStatusConfigMaps in this file.
 func (c *Cluster) startProvisioningOverPVCs(config *provisionConfig, errs *provisionErrors) (*util.Set, error) {
 	// Parsing storageClassDeviceSets and parsing it to volume sources
-	c.spec.Storage.VolumeSources = append(c.spec.Storage.VolumeSources, c.prepareStorageClassDeviceSets(errs)...)
-
-	c.ValidStorage.VolumeSources = c.spec.Storage.VolumeSources
+	c.prepareStorageClassDeviceSets(errs)
 
 	// no valid VolumeSource is ready to run an osd
-	if !c.shouldProvisionOverPVCs() {
-		logger.Info("no storageClassDeviceSets or volumeSources are defined to configure OSDs on PVCs")
+	if len(c.deviceSets) == 0 {
+		logger.Info("no storageClassDeviceSets defined to configure OSDs on PVCs")
 		return util.NewSet(), nil
 	}
 
@@ -155,7 +152,7 @@ func (c *Cluster) startProvisioningOverPVCs(config *provisionConfig, errs *provi
 	}
 
 	awaitingStatusConfigMaps := util.NewSet()
-	for _, volume := range c.ValidStorage.VolumeSources {
+	for _, volume := range c.deviceSets {
 		// Check whether we need to cancel the orchestration
 		if err := opcontroller.CheckForCancelledOrchestration(c.context); err != nil {
 			return awaitingStatusConfigMaps, err
@@ -285,7 +282,7 @@ func (c *Cluster) startProvisioningOverNodes(config *provisionConfig, errs *prov
 		}
 		c.spec.Storage.Nodes = nil
 		for _, hostname := range hostnameMap {
-			storageNode := rookv1.Node{
+			storageNode := cephv1.Node{
 				Name: hostname,
 			}
 			c.spec.Storage.Nodes = append(c.spec.Storage.Nodes, storageNode)
@@ -319,7 +316,8 @@ func (c *Cluster) startProvisioningOverNodes(config *provisionConfig, errs *prov
 		}
 
 		// fully resolve the storage config and resources for this node
-		n := c.resolveNode(node.Name)
+		// don't care about osd device class resources since it will be overwritten later for prepareosd resources
+		n := c.resolveNode(node.Name, "")
 		if n == nil {
 			logger.Warningf("node %q did not resolve", node.Name)
 			continue

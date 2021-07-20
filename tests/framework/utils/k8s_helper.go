@@ -44,13 +44,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/kubernetes"
-	storagev1util "k8s.io/kubernetes/pkg/apis/storage/v1/util"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 // K8sHelper is a helper for common kubectl commands
 type K8sHelper struct {
 	executor         *exec.CommandExecutor
+	remoteExecutor   *exec.RemotePodCommandExecutor
 	Clientset        *kubernetes.Clientset
 	RookClientset    *rookclient.Clientset
 	RunningInCluster bool
@@ -92,7 +92,12 @@ func CreateK8sHelper(t func() *testing.T) (*K8sHelper, error) {
 		return nil, fmt.Errorf("failed to get rook clientset. %+v", err)
 	}
 
-	h := &K8sHelper{executor: executor, Clientset: clientset, RookClientset: rookClientset, T: t}
+	remoteExecutor := &exec.RemotePodCommandExecutor{
+		ClientSet:  clientset,
+		RestClient: config,
+	}
+
+	h := &K8sHelper{executor: executor, Clientset: clientset, RookClientset: rookClientset, T: t, remoteExecutor: remoteExecutor}
 	if strings.Contains(config.Host, "//10.") {
 		h.RunningInCluster = true
 	}
@@ -197,6 +202,28 @@ func getManifestFromURL(url string) (string, error) {
 
 func (k8sh *K8sHelper) Exec(namespace, podName, command string, commandArgs []string) (string, error) {
 	return k8sh.ExecWithRetry(1, namespace, podName, command, commandArgs)
+}
+
+func (k8sh *K8sHelper) ExecRemote(namespace, command string, commandArgs []string) (string, error) {
+	return k8sh.ExecRemoteWithRetry(1, namespace, command, commandArgs)
+}
+
+// ExecRemoteWithRetry will attempt to remotely (in toolbox) run a command "retries" times, waiting 3s between each call. Upon success, returns the output.
+func (k8sh *K8sHelper) ExecRemoteWithRetry(retries int, namespace, command string, commandArgs []string) (string, error) {
+	var err error
+	var output, stderr string
+	cliFinal := append([]string{command}, commandArgs...)
+	for i := 0; i < retries; i++ {
+		output, stderr, err = k8sh.remoteExecutor.ExecCommandInContainerWithFullOutput("rook-ceph-tools", "rook-ceph-tools", namespace, cliFinal...)
+		if err == nil {
+			return output, nil
+		}
+		if i < retries-1 {
+			logger.Warningf("remote command %v execution failed trying again... %v", cliFinal, kerrors.ReasonForError(err))
+			time.Sleep(3 * time.Second)
+		}
+	}
+	return "", fmt.Errorf("remote exec command %v failed on pod in namespace %s. %s. %s. %+v", cliFinal, namespace, output, stderr, err)
 }
 
 // ExecWithRetry will attempt to run a command "retries" times, waiting 3s between each call. Upon success, returns the output.
@@ -496,7 +523,7 @@ func (k8sh *K8sHelper) GetEventsFromNamespace(namespace, testName, platformName 
 	if events == "" {
 		return
 	}
-	file.WriteString(events) //nolint, ok to ignore this test logging
+	file.WriteString(events) //nolint // ok to ignore this test logging
 }
 
 func (k8sh *K8sHelper) appendPodDescribe(file *os.File, namespace, name string) {
@@ -504,9 +531,9 @@ func (k8sh *K8sHelper) appendPodDescribe(file *os.File, namespace, name string) 
 	if description == "" {
 		return
 	}
-	writeHeader(file, fmt.Sprintf("Pod: %s\n", name)) //nolint, ok to ignore this test logging
-	file.WriteString(description)                     //nolint, ok to ignore this test logging
-	file.WriteString("\n")                            //nolint, ok to ignore this test logging
+	writeHeader(file, fmt.Sprintf("Pod: %s\n", name)) //nolint // ok to ignore this test logging
+	file.WriteString(description)                     //nolint // ok to ignore this test logging
+	file.WriteString("\n")                            //nolint // ok to ignore this test logging
 }
 
 func (k8sh *K8sHelper) PrintPodDescribe(namespace string, args ...string) {
@@ -1008,7 +1035,7 @@ func (k8sh *K8sHelper) IsDefaultStorageClassPresent() (bool, error) {
 	}
 
 	for _, sc := range scs.Items {
-		if storagev1util.IsDefaultAnnotation(sc.ObjectMeta) {
+		if isDefaultAnnotation(sc.ObjectMeta) {
 			return true, nil
 		}
 	}
@@ -1510,9 +1537,9 @@ func (k8sh *K8sHelper) getPodLogs(pod v1.Pod, platformName, namespace, testName 
 }
 
 func writeHeader(file *os.File, message string) error {
-	file.WriteString("\n-----------------------------------------\n") //nolint, ok to ignore this test logging
-	file.WriteString(message)                                         //nolint, ok to ignore this test logging
-	file.WriteString("\n-----------------------------------------\n") //nolint, ok to ignore this test logging
+	file.WriteString("\n-----------------------------------------\n") //nolint // ok to ignore this test logging
+	file.WriteString(message)                                         //nolint // ok to ignore this test logging
+	file.WriteString("\n-----------------------------------------\n") //nolint // ok to ignore this test logging
 
 	return nil
 }
@@ -1522,7 +1549,7 @@ func (k8sh *K8sHelper) appendContainerLogs(file *os.File, pod v1.Pod, containerN
 	if initContainer {
 		message = "INIT " + message
 	}
-	writeHeader(file, message) //nolint, ok to ignore this test logging
+	writeHeader(file, message) //nolint // ok to ignore this test logging
 	ctx := context.TODO()
 	logOpts := &v1.PodLogOptions{Previous: previousLog}
 	if containerName != "" {
@@ -1691,4 +1718,22 @@ func (k8sh *K8sHelper) WaitForCronJob(name, namespace string) error {
 		return nil
 	}
 	return fmt.Errorf("giving up waiting for CronJob named %s in namespace %s", name, namespace)
+}
+
+func (k8sh *K8sHelper) GetResourceStatus(kind, name, namespace string) (string, error) {
+	return k8sh.Kubectl("-n", namespace, "get", kind, name) // TODO: -o status
+}
+
+func (k8sh *K8sHelper) WaitUntilResourceIsDeleted(kind, namespace, name string) error {
+	var err error
+	var out string
+	for i := 0; i < RetryLoop; i++ {
+		out, err = k8sh.Kubectl("-n", namespace, "get", kind, name, "-o", "name")
+		if strings.Contains(out, "Error from server (NotFound): ") {
+			return nil
+		}
+		logger.Infof("waiting %d more seconds for resource %s %q to be deleted:\n%s", RetryInterval, kind, name, out)
+		time.Sleep(RetryInterval * time.Second)
+	}
+	return errors.Wrapf(err, "timed out waiting for resource %s %q to be deleted:\n%s", kind, name, out)
 }

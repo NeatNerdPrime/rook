@@ -40,11 +40,21 @@ const (
 	// UninitializedCephConfigError refers to the error message printed by the Ceph CLI when there is no ceph configuration file
 	// This typically is raised when the operator has not finished initializing
 	UninitializedCephConfigError = "error calling conf_read_file"
+
+	// OperatorNotInitializedMessage is the message we print when the Operator is not ready to reconcile, typically the ceph.conf has not been generated yet
+	OperatorNotInitializedMessage = "skipping reconcile since operator is still initializing"
+
+	// CancellingOrchestrationMessage is the message to indicate a reconcile was cancelled
+	CancellingOrchestrationMessage = "CANCELLING CURRENT ORCHESTRATION"
 )
 
 var (
 	// ImmediateRetryResult Return this for a immediate retry of the reconciliation loop with the same request object.
 	ImmediateRetryResult = reconcile.Result{Requeue: true}
+
+	// ImmediateRetryResultNoBackoff Return this for a immediate retry of the reconciliation loop with the same request object.
+	// Override the exponential backoff behavior by setting the RequeueAfter time explicitly.
+	ImmediateRetryResultNoBackoff = reconcile.Result{Requeue: true, RequeueAfter: time.Second}
 
 	// WaitForRequeueIfCephClusterNotReady waits for the CephCluster to be ready
 	WaitForRequeueIfCephClusterNotReady = reconcile.Result{Requeue: true, RequeueAfter: 10 * time.Second}
@@ -77,7 +87,7 @@ func CheckForCancelledOrchestration(context *clusterd.Context) error {
 
 	// Check whether we need to cancel the orchestration
 	if context.RequestCancelOrchestration.IsSet() {
-		return errors.New("CANCELLING CURRENT ORCHESTRATION")
+		return errors.New(CancellingOrchestrationMessage)
 	}
 
 	return nil

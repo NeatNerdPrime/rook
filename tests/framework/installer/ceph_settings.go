@@ -18,15 +18,10 @@ package installer
 
 import (
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"os"
-	"path"
 	"strings"
 
-	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
-	"github.com/rook/rook/tests/framework/utils"
 )
 
 // TestCephSettings struct for handling panic and test suite tear down
@@ -67,17 +62,8 @@ func (s *TestCephSettings) ApplyEnvVars() {
 }
 
 func (s *TestCephSettings) readManifest(filename string) string {
-	rootDir, err := utils.FindRookRoot()
-	if err != nil {
-		panic(err)
-	}
-	manifest := path.Join(rootDir, "cluster/examples/kubernetes/ceph", filename)
-	logger.Infof("Reading manifest: %s", manifest)
-	contents, err := ioutil.ReadFile(manifest)
-	if err != nil {
-		panic(errors.Wrapf(err, "failed to read manifest at %s", manifest))
-	}
-	return replaceNamespaces(manifest, string(contents), s.OperatorNamespace, s.Namespace)
+	manifest := readManifest("ceph", filename)
+	return replaceNamespaces(manifest, manifest, s.OperatorNamespace, s.Namespace)
 }
 
 func (s *TestCephSettings) readManifestFromGithub(filename string) string {
@@ -85,20 +71,8 @@ func (s *TestCephSettings) readManifestFromGithub(filename string) string {
 }
 
 func (s *TestCephSettings) readManifestFromGithubWithClusterNamespace(filename, clusterNamespace string) string {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/rook/rook/%s/cluster/examples/kubernetes/ceph/%s", s.RookVersion, filename)
-	logger.Infof("Retrieving manifest: %s", url)
-	// #nosec G107 This is only test code and is expected to read from a url
-	response, err := http.Get(url)
-	if err != nil {
-		panic(errors.Wrapf(err, "failed to read manifest from %s", url))
-	}
-	defer response.Body.Close()
-
-	content, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		panic(errors.Wrapf(err, "failed to read content from %s", url))
-	}
-	return replaceNamespaces(url, string(content), s.OperatorNamespace, clusterNamespace)
+	manifest := readManifestFromGithub(s.RookVersion, "ceph", filename)
+	return replaceNamespaces(filename, manifest, s.OperatorNamespace, clusterNamespace)
 }
 
 func (s *TestCephSettings) replaceOperatorSettings(manifest string) string {

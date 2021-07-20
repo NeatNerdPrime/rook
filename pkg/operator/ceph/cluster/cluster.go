@@ -105,6 +105,7 @@ func (c *cluster) doOrchestration(rookImage string, cephVersion cephver.CephVers
 	clusterInfo.OwnerInfo = c.ownerInfo
 	clusterInfo.SetName(c.namespacedName.Name)
 	c.ClusterInfo = clusterInfo
+	c.ClusterInfo.NetworkSpec = spec.Network
 
 	// The cluster Identity must be established at this point
 	if !c.ClusterInfo.IsInitialized(true) {
@@ -238,6 +239,12 @@ func (c *ClusterController) configureLocalCephCluster(cluster *cluster) error {
 	cephVersion, isUpgrade, err := c.detectAndValidateCephVersion(cluster)
 	if err != nil {
 		return errors.Wrap(err, "failed the ceph version check")
+	}
+
+	if cluster.Spec.IsStretchCluster() {
+		if !cephVersion.IsAtLeast(cephver.CephVersion{Major: 16, Minor: 2, Build: 5}) {
+			return errors.Errorf("stretch clusters minimum ceph version is v16.2.5, but is running %s", cephVersion.String())
+		}
 	}
 
 	// Set the value of isUpgrade based on the image discovery done by detectAndValidateCephVersion()
@@ -396,7 +403,7 @@ func (c *ClusterController) preClusterStartValidation(cluster *cluster) error {
 	// Validate on-PVC cluster encryption KMS settings
 	if cluster.Spec.Storage.IsOnPVCEncrypted() && cluster.Spec.Security.KeyManagementService.IsEnabled() {
 		// Validate the KMS details
-		err := kms.ValidateConnectionDetails(c.context, cluster.Spec, cluster.Namespace)
+		err := kms.ValidateConnectionDetails(c.context, cluster.Spec.Security, cluster.Namespace)
 		if err != nil {
 			return errors.Wrap(err, "failed to validate kms connection details")
 		}

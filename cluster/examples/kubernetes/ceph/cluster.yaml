@@ -19,9 +19,9 @@ spec:
     # v13 is mimic, v14 is nautilus, and v15 is octopus.
     # RECOMMENDATION: In production, use a specific version tag instead of the general v14 flag, which pulls the latest release and could result in different
     # versions running within the cluster. See tags available at https://hub.docker.com/r/ceph/ceph/tags/.
-    # If you want to be more precise, you can always use a timestamp tag such ceph/ceph:v15.2.9-20201217
+    # If you want to be more precise, you can always use a timestamp tag such ceph/ceph:v16.2.5-20210708
     # This tag might not contain a new Ceph version, just security fixes from the underlying operating system, which will reduce vulnerabilities
-    image: ceph/ceph:v15.2.9
+    image: ceph/ceph:v16.2.5
     # Whether to allow unsupported versions of Ceph. Currently `nautilus` and `octopus` are supported.
     # Future versions such as `pacific` would require this to be set to `true`.
     # Do not set to true in production.
@@ -81,7 +81,7 @@ spec:
   network:
     # enable host networking
     #provider: host
-    # EXPERIMENTAL: enable the Multus network provider
+    # enable the Multus network provider
     #provider: multus
     #selectors:
       # The selector keys are required to be `public` and `cluster`.
@@ -189,6 +189,10 @@ spec:
 # The above example requests/limits can also be added to the other components
 #    mon:
 #    osd:
+# For OSD it also is a possible to specify requests/limits based on device class
+#    osd-hdd:
+#    osd-ssd:
+#    osd-nvme:
 #    prepareosd:
 #    mgr-sidecar:
 #    crashcollector:

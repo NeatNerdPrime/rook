@@ -305,17 +305,40 @@ func getAvailableDevices(context *clusterd.Context, agent *OsdAgent) (*DeviceOsd
 		// cannot detect that correctly
 		// see: https://tracker.ceph.com/issues/43585
 		if device.Filesystem != "" {
-			logger.Infof("skipping device %q because it contains a filesystem %q", device.Name, device.Filesystem)
-			continue
+			// Allow further inspection of that device before skipping it
+			if device.Filesystem == "crypto_LUKS" && agent.pvcBacked {
+				if isCephEncryptedBlock(context, agent.clusterInfo.FSID, device.Name) {
+					logger.Infof("encrypted disk %q is an OSD part of this cluster, considering it", device.Name)
+				}
+			} else {
+				logger.Infof("skipping device %q because it contains a filesystem %q", device.Name, device.Filesystem)
+				continue
+			}
 		}
 
-		// If we detect a partition we have to make sure that ceph-volume will be able to consume it
-		// ceph-volume version 14.2.8 has the right code to support partitions
 		if device.Type == sys.PartType {
+			// If we detect a partition we have to make sure that ceph-volume will be able to consume it
+			// ceph-volume version 14.2.8 has the right code to support partitions
 			if !agent.clusterInfo.CephVersion.IsAtLeast(cephVolumeRawModeMinCephVersion) {
 				logger.Infof("skipping device %q because it is a partition and ceph version is too old, you need at least ceph %q", device.Name, cephVolumeRawModeMinCephVersion.String())
 				continue
 			}
+
+			// raw disks or partitions provisioned with bluestore can sometimes appear to have
+			// Atari (AHDI) partitions created on them. These are phantom partitions that weren't
+			// actually created but appear because the Atari partition spec is too broad. If we
+			// detect an Atari partition, we ignore it because it is likely there is already an OSD
+			// provisioned and running on the disk. If we provision another, we will corrupt the
+			// already-running OSD.
+			isAtari, err := sys.PartitionIsAtari(context.Executor, device.Name)
+			if err != nil {
+				logger.Errorf("failed to determine if partition %q is Atari; skipping it to be safe. %v", device.Name, err)
+				continue
+			} else if isAtari {
+				logger.Infof("skipping Atari partition %q to avoid corrupting an already-running OSD", device.Name)
+				continue
+			}
+
 			device, err := clusterd.PopulateDeviceUdevInfo(device.Name, context.Executor, device)
 			if err != nil {
 				logger.Errorf("failed to get udev info of partition %q. %v", device.Name, err)
@@ -339,7 +362,7 @@ func getAvailableDevices(context *clusterd.Context, agent *OsdAgent) (*DeviceOsd
 		rejectedReason := ""
 		if agent.pvcBacked {
 			block := fmt.Sprintf("/mnt/%s", agent.nodeName)
-			rawOsds, err := GetCephVolumeRawOSDs(context, agent.clusterInfo, agent.clusterInfo.FSID, block, agent.metadataDevice, "", false)
+			rawOsds, err := GetCephVolumeRawOSDs(context, agent.clusterInfo, agent.clusterInfo.FSID, block, agent.metadataDevice, "", false, true)
 			if err != nil {
 				isAvailable = false
 				rejectedReason = fmt.Sprintf("failed to detect if there is already an osd. %v", err)
@@ -414,6 +437,20 @@ func getAvailableDevices(context *clusterd.Context, agent *OsdAgent) (*DeviceOsd
 					}
 				}
 				matchedDevice = desiredDevice
+
+				if matchedDevice.DeviceClass == "" {
+					classNotSet := true
+					if agent.pvcBacked {
+						crushDeviceClass := os.Getenv(oposd.CrushDeviceClassVarName)
+						if crushDeviceClass != "" {
+							matchedDevice.DeviceClass = crushDeviceClass
+							classNotSet = false
+						}
+					}
+					if classNotSet {
+						matchedDevice.DeviceClass = sys.GetDiskDeviceClass(device)
+					}
+				}
 
 				if matched {
 					break

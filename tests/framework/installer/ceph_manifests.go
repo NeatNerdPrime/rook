@@ -42,7 +42,7 @@ type CephManifests interface {
 	GetFilesystem(name string, activeCount int) string
 	GetNFS(name, pool string, daemonCount int) string
 	GetRBDMirror(name string, daemonCount int) string
-	GetObjectStore(name string, replicaCount, port int) string
+	GetObjectStore(name string, replicaCount, port int, tlsEnable bool) string
 	GetObjectStoreUser(name, displayName, store string) string
 	GetBucketStorageClass(storeName, storageClassName, reclaimPolicy, region string) string
 	GetOBC(obcName, storageClassName, bucketName string, maxObject string, createBucket bool) string
@@ -59,8 +59,8 @@ func NewCephManifests(settings *TestCephSettings) CephManifests {
 	switch settings.RookVersion {
 	case VersionMaster:
 		return &CephManifestsMaster{settings}
-	case Version1_5:
-		return &CephManifestsV1_5{settings}
+	case Version1_6:
+		return &CephManifestsV1_6{settings}
 	}
 	panic(fmt.Errorf("unrecognized ceph manifest version: %s", settings.RookVersion))
 }
@@ -101,6 +101,7 @@ func (m *CephManifestsMaster) GetCommon() string {
 func (m *CephManifestsMaster) GetToolbox() string {
 	if m.settings.DirectMountToolbox {
 		manifest := strings.ReplaceAll(m.settings.readManifest("direct-mount.yaml"), "name: rook-direct-mount", "name: rook-ceph-tools")
+		manifest = strings.ReplaceAll(manifest, "name: rook-direct-mount", "name: rook-ceph-tools")
 		return strings.ReplaceAll(manifest, "app: rook-direct-mount", "app: rook-ceph-tools")
 	}
 	return m.settings.readManifest("toolbox.yaml")
@@ -384,8 +385,9 @@ spec:
     active: ` + strconv.Itoa(count)
 }
 
-func (m *CephManifestsMaster) GetObjectStore(name string, replicaCount, port int) string {
-	return `apiVersion: ceph.rook.io/v1
+func (m *CephManifestsMaster) GetObjectStore(name string, replicaCount, port int, tlsEnable bool) string {
+	if tlsEnable {
+		return `apiVersion: ceph.rook.io/v1
 kind: CephObjectStore
 metadata:
   name: ` + name + `
@@ -402,6 +404,31 @@ spec:
       requireSafeReplicaSize: false
   gateway:
     type: s3
+    securePort: ` + strconv.Itoa(port) + `
+    instances: ` + strconv.Itoa(replicaCount) + `
+    sslCertificateRef: ` + name + `
+  healthCheck:
+    bucket:
+      disabled: false
+      interval: 10s
+`
+	}
+	return `apiVersion: ceph.rook.io/v1
+kind: CephObjectStore
+metadata:
+  name: ` + name + `
+  namespace: ` + m.settings.Namespace + `
+spec:
+  metadataPool:
+    replicated:
+      size: 1
+      requireSafeReplicaSize: false
+    compressionMode: passive
+  dataPool:
+    replicated:
+      size: 1
+      requireSafeReplicaSize: false
+  gateway:
     port: ` + strconv.Itoa(port) + `
     instances: ` + strconv.Itoa(replicaCount) + `
   healthCheck:
@@ -478,7 +505,11 @@ metadata:
 spec:
   external:
     enable: true
-  dataDirHostPath: ` + m.settings.DataDirHostPath + ``
+  dataDirHostPath: ` + m.settings.DataDirHostPath + `
+  healthCheck:
+    daemonHealth:
+      status:
+        interval: 5s`
 }
 
 // GetRBDMirror returns the manifest to create a Rook Ceph RBD Mirror resource with the given config.

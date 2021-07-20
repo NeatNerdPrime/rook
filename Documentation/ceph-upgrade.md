@@ -298,6 +298,18 @@ Then apply the latest changes from v1.6.
 kubectl apply -f common.yaml -f crds.yaml
 ```
 
+> **NOTE:** If your Rook-Ceph cluster was initially installed with rook v1.4 or lower, the above
+> command will return errors due to updates from Kubernetes' v1beta1 Custom Resource Definitions.
+> The error will contain text similar to `... spec.preserveUnknownFields: Invalid value...`.
+
+If you experience this error applying the latest changes to CRDs, use `kubectl`'s `replace` command
+to replace the resources followed by `apply` to verify that the resources are updated without other
+errors.
+```sh
+kubectl replace -f crds.yaml
+kubectl apply -f crds.yaml
+```
+
 ## 2. Update Ceph CSI versions
 
 > Automatically updated if you are upgrading via the helm chart
@@ -305,6 +317,8 @@ kubectl apply -f common.yaml -f crds.yaml
 If you have specified custom CSI images in the Rook-Ceph Operator deployment, we recommended you
 update to use the latest Ceph-CSI drivers. See the [CSI Version](#csi-version) section for more
 details.
+
+> Note: If using snapshots, refer to the [Upgrade Snapshot API guide](ceph-csi-snapshot.md#upgrade-snapshot-api).
 
 ## 3. Update the Rook Operator
 
@@ -366,9 +380,9 @@ Verify the Ceph cluster's health using the [health verification section](#health
 
 ## Ceph Version Upgrades
 
-Rook v1.6 now supports Ceph Pacific 16.2.0 or newer. Support remains for Ceph Nautilus 14.2.5 or 
+Rook v1.6 now supports Ceph Pacific 16.2.0 or newer. Support remains for Ceph Nautilus 14.2.5 or
 newer and Ceph Octopus v15.2.0 or newer. These are the only supported major versions of Ceph. Rook
-v1.7 will no longer support Ceph Nautilus (14.2.x), and users will have to upgrade Ceph to 
+v1.7 will no longer support Ceph Nautilus (14.2.x), and users will have to upgrade Ceph to
 Octopus (15.2.x) or Pacific (16.2.x) before the next upgrade.
 
 > **IMPORTANT: When an update is requested, the operator will check Ceph's status, if it is in `HEALTH_ERR` it will refuse to do the upgrade.**
@@ -386,10 +400,10 @@ until all the daemons have been updated.
 Official Ceph container images can be found on [Docker Hub](https://hub.docker.com/r/ceph/ceph/tags/).
 These images are tagged in a few ways:
 
-* The most explicit form of tags are full-ceph-version-and-build tags (e.g., `v15.2.9-20210224`).
+* The most explicit form of tags are full-ceph-version-and-build tags (e.g., `v16.2.5-20210708`).
   These tags are recommended for production clusters, as there is no possibility for the cluster to
   be heterogeneous with respect to the version of Ceph running in containers.
-* Ceph major version tags (e.g., `v15`) are useful for development and test clusters so that the
+* Ceph major version tags (e.g., `v16`) are useful for development and test clusters so that the
   latest version of Ceph is always available.
 
 **Ceph containers other than the official images from the registry above will not be supported.**
@@ -402,7 +416,7 @@ The majority of the upgrade will be handled by the Rook operator. Begin the upgr
 Ceph image field in the cluster CRD (`spec.cephVersion.image`).
 
 ```sh
-NEW_CEPH_IMAGE='ceph/ceph:v15.2.9-20210224'
+NEW_CEPH_IMAGE='ceph/ceph:v16.2.5-20210708'
 CLUSTER_NAME="$ROOK_CLUSTER_NAMESPACE"  # change if your cluster name is not the Rook namespace
 kubectl -n $ROOK_CLUSTER_NAMESPACE patch CephCluster $CLUSTER_NAME --type=merge -p "{\"spec\": {\"cephVersion\": {\"image\": \"$NEW_CEPH_IMAGE\"}}}"
 ```
@@ -421,10 +435,10 @@ Determining when the Ceph has fully updated is rather simple.
 ```console
 kubectl -n $ROOK_CLUSTER_NAMESPACE get deployment -l rook_cluster=$ROOK_CLUSTER_NAMESPACE -o jsonpath='{range .items[*]}{"ceph-version="}{.metadata.labels.ceph-version}{"\n"}{end}' | sort | uniq
 This cluster is not yet finished:
-    ceph-version=14.2.7-0
-    ceph-version=15.2.9-0
+    ceph-version=15.2.12-0
+    ceph-version=16.2.5-0
 This cluster is finished:
-    ceph-version=15.2.9-0
+    ceph-version=16.2.5-0
 ```
 
 #### 3. Verify the updated cluster
@@ -448,12 +462,12 @@ kubectl -n $ROOK_OPERATOR_NAMESPACE edit configmap rook-ceph-operator-config
 The default upstream images are included below, which you can change to your desired images.
 
 ```yaml
-ROOK_CSI_CEPH_IMAGE: "quay.io/cephcsi/cephcsi:v3.3.0"
-ROOK_CSI_REGISTRAR_IMAGE: "k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.0.1"
-ROOK_CSI_PROVISIONER_IMAGE: "k8s.gcr.io/sig-storage/csi-provisioner:v2.0.4"
-ROOK_CSI_SNAPSHOTTER_IMAGE: "k8s.gcr.io/sig-storage/csi-snapshotter:v3.0.2"
-ROOK_CSI_ATTACHER_IMAGE: "k8s.gcr.io/sig-storage/csi-attacher:v3.0.2"
-ROOK_CSI_RESIZER_IMAGE: "k8s.gcr.io/sig-storage/csi-resizer:v1.0.1"
+ROOK_CSI_CEPH_IMAGE: "quay.io/cephcsi/cephcsi:v3.3.1"
+ROOK_CSI_REGISTRAR_IMAGE: "k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.2.0"
+ROOK_CSI_PROVISIONER_IMAGE: "k8s.gcr.io/sig-storage/csi-provisioner:v2.2.2"
+ROOK_CSI_ATTACHER_IMAGE: "k8s.gcr.io/sig-storage/csi-attacher:v3.2.1"
+ROOK_CSI_RESIZER_IMAGE: "k8s.gcr.io/sig-storage/csi-resizer:v1.2.0"
+ROOK_CSI_SNAPSHOTTER_IMAGE: "k8s.gcr.io/sig-storage/csi-snapshotter:v4.1.1"
 ```
 
 ### Use default images
@@ -470,18 +484,18 @@ kubectl --namespace rook-ceph get pod -o jsonpath='{range .items[*]}{range .spec
 ```
 
 ```
-quay.io/cephcsi/cephcsi:v3.3.0
-k8s.gcr.io/sig-storage/csi-attacher:v3.0.2
-k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.0.1
-k8s.gcr.io/sig-storage/csi-provisioner:v2.0.4
-k8s.gcr.io/sig-storage/csi-resizer:v1.0.1
-k8s.gcr.io/sig-storage/csi-snapshotter:v3.0.2
+quay.io/cephcsi/cephcsi:v3.3.1
+k8s.gcr.io/sig-storage/csi-attacher:v3.2.1
+k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.2.0
+k8s.gcr.io/sig-storage/csi-provisioner:v2.2.2
+k8s.gcr.io/sig-storage/csi-resizer:v1.2.0
+k8s.gcr.io/sig-storage/csi-snapshotter:v4.1.1
 ```
 
 ## Replace lvm mode OSDs with raw mode (if you use LV-backed PVC)
 
 For LV-backed PVC, we recommend replacing lvm mode OSDs with raw mode OSDs. See
-[common issue](Documentation/ceph-common-issues.md#lvm-metadata-can-be-corrupted-with-osd-on-lv-backed-pvc).
+[common issue](ceph-common-issues.md#lvm-metadata-can-be-corrupted-with-osd-on-lv-backed-pvc).
 
 
 ## Migrate the Drive Group spec

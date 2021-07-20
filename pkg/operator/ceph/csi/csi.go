@@ -28,8 +28,23 @@ import (
 )
 
 func ValidateAndConfigureDrivers(context *clusterd.Context, namespace, rookImage, securityAccount string, serverVersion *version.Info, ownerInfo *k8sutil.OwnerInfo) {
-	var v *CephCSIVersion
-	var err error
+	csiLock.Lock()
+	defer csiLock.Unlock()
+	var (
+		v   *CephCSIVersion
+		err error
+	)
+
+	if err = setParams(context.Clientset); err != nil {
+		logger.Errorf("failed to configure CSI parameters. %v", err)
+		return
+	}
+
+	if err = validateCSIParam(); err != nil {
+		logger.Errorf("failed to validate CSI parameters. %v", err)
+		return
+	}
+
 	if !AllowUnsupported && CSIEnabled() {
 		if v, err = validateCSIVersion(context.Clientset, namespace, rookImage, securityAccount, ownerInfo); err != nil {
 			logger.Errorf("invalid csi version. %+v", err)
@@ -40,16 +55,20 @@ func ValidateAndConfigureDrivers(context *clusterd.Context, namespace, rookImage
 	}
 
 	if CSIEnabled() {
-		if err := startDrivers(context.Clientset, context.RookClientset, namespace, serverVersion, ownerInfo, v); err != nil {
-			logger.Errorf("failed to start Ceph csi drivers. %v", err)
-			return
+		maxRetries := 3
+		for i := 0; i < maxRetries; i++ {
+			if err = startDrivers(context.Clientset, context.RookClientset, namespace, serverVersion, ownerInfo, v); err != nil {
+				logger.Errorf("failed to start Ceph csi drivers, will retry starting csi drivers %d more times. %v", maxRetries-i-1, err)
+			} else {
+				break
+			}
 		}
 	}
 
 	stopDrivers(context.Clientset, namespace, serverVersion)
 }
 
-func SetParams(clientset kubernetes.Interface) error {
+func setParams(clientset kubernetes.Interface) error {
 	var err error
 
 	csiEnableRBD, err := k8sutil.GetOperatorSetting(clientset, controllerutil.OperatorSettingConfigMapName, "ROOK_CSI_ENABLE_RBD", "true")
@@ -84,7 +103,7 @@ func SetParams(clientset kubernetes.Interface) error {
 		return errors.Wrap(err, "unable to parse value for 'ROOK_CSI_ENABLE_GRPC_METRICS'")
 	}
 
-	csiEnableCSIHostNetwork, err := k8sutil.GetOperatorSetting(clientset, controllerutil.OperatorSettingConfigMapName, "CSI_ENABLE_HOST_NETWORK", "false")
+	csiEnableCSIHostNetwork, err := k8sutil.GetOperatorSetting(clientset, controllerutil.OperatorSettingConfigMapName, "CSI_ENABLE_HOST_NETWORK", "true")
 	if err != nil {
 		return errors.Wrap(err, "failed to determine if CSI Host Network is enabled")
 	}

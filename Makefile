@@ -21,7 +21,8 @@ all: build
 # Build Options
 
 # Controller-gen version
-CONTROLLER_GEN_VERSION=v0.5.0
+# f284e2e8... is master ahead of v0.5.0 which has ability to generate embedded objectmeta in CRDs
+CONTROLLER_GEN_VERSION=f284e2e8098cb0193c2b0c7c1c651ae75496539b
 
 # Set GOBIN
 ifeq (,$(shell go env GOBIN))
@@ -114,12 +115,8 @@ do.build.platform.%:
 
 do.build.parallel: $(foreach p,$(PLATFORMS), do.build.platform.$(p))
 
-build: csv-clean build.common ## Build source code for host platform.
-	@$(MAKE) go.build
-# if building on non-linux platforms, also build the linux container
-ifneq ($(GOOS),linux)
+build: csv-clean build.common ## Only build for linux platform
 	@$(MAKE) go.build PLATFORM=linux_$(GOHOSTARCH)
-endif
 	@$(MAKE) -C images PLATFORM=linux_$(GOHOSTARCH)
 
 build.all: build.common ## Build source code for all platforms. Best done in the cross build container due to cross compiler dependencies.
@@ -150,7 +147,7 @@ fmt: ## Check formatting of go sources.
 	@$(MAKE) go.init
 	@$(MAKE) go.fmt
 
-codegen: ## Run code generators.
+codegen: ${CODE_GENERATOR} ## Run code generators.
 	@build/codegen/codegen.sh
 
 mod.check: go.mod.check ## Check if any go modules changed.
