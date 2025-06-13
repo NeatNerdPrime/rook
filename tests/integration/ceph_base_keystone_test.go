@@ -18,7 +18,6 @@ package integration
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/rook/rook/tests/framework/clients"
@@ -85,12 +84,7 @@ func InstallKeystoneInTestCluster(shelper *utils.K8sHelper, namespace string) er
 	// the helm installer uses the rook repository and cannot be used as is
 	// therefore parts of the installer are adapted here
 
-	// use helm path from environment (the same is used by the helm installer)
-	helmPath := os.Getenv("TEST_HELM_PATH")
-	if helmPath == "" {
-		helmPath = "/tmp/rook-tests-scripts-helm/helm"
-	}
-	helmHelper := utils.NewHelmHelper(helmPath)
+	helmHelper := utils.NewHelmHelper(installer.TestHelmPath())
 
 	// add the cert-manager helm repo
 	logger.Infof("adding cert-manager helm repo")
@@ -961,14 +955,14 @@ func prepareE2ETest(t *testing.T, helper *clients.TestClient, k8sh *utils.K8sHel
 	t.Run("create internal swift endpoint in keystone", func(t *testing.T) {
 		testInOpenStackClient(t, k8sh, namespace,
 			"admin", "admin", true,
-			"openstack", "endpoint", "create", "--region", "default", "--enable", "swift", "internal", ""+rgwServiceUri(storeName, namespace)+"/foobar/v1",
+			"openstack", "endpoint", "create", "--region", "RegionOne", "--enable", "swift", "internal", ""+rgwServiceUri(storeName, namespace)+"/foobar/v1",
 		)
 	})
 
 	t.Run("create admin swift endpoint in keystone", func(t *testing.T) {
 		testInOpenStackClient(t, k8sh, namespace,
 			"admin", "admin", true,
-			"openstack", "endpoint", "create", "--region", "default", "--enable", "swift", "admin", ""+rgwServiceUri(storeName, namespace)+"/foobar/v1",
+			"openstack", "endpoint", "create", "--region", "RegionOne", "--enable", "swift", "admin", ""+rgwServiceUri(storeName, namespace)+"/foobar/v1",
 		)
 	})
 }

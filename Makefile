@@ -170,12 +170,21 @@ golangci-lint: $(YQ)
 markdownlint: ## Check formatting of documentation sources
 	markdownlint-cli2 "Documentation/**/**.md" "#Documentation/Helm-Charts/**" --config .markdownlint-cli2.cjs
 
+.PHONY: markdownlint.fix
+markdownlint.fix: ## Check and fix formatting of documentation sources
+	markdownlint-cli2 "Documentation/**/**.md" "#Documentation/Helm-Charts/**" --fix --config .markdownlint-cli2.cjs
+
 .PHONY: yamllint
 yamllint:
 	yamllint -c .yamllint deploy/examples/ --no-warnings
 
+.PHONY: helm.lint
+
+helm.lint: ## Check the helm charts
+	ct lint --charts=./deploy/charts/rook-ceph,./deploy/charts/rook-ceph-cluster --validate-yaml=false --validate-maintainers=false
+
 .PHONY: lint
-lint: yamllint pylint shellcheck checkmake vet markdownlint golangci-lint ## Run various linters
+lint: yamllint pylint shellcheck checkmake vet markdownlint golangci-lint helm.lint  ## Run various linters
 
 .PHONY: pylint
 pylint:
