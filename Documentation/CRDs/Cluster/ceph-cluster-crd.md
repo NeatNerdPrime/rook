@@ -378,15 +378,15 @@ The following storage selection settings are specific to Ceph and do not apply t
 * `enableCrushUpdates`: Enables rook to update the pool crush rule using Pool Spec. Can cause data remapping if crush rule changes, Defaults to false.
 * `migration`: Existing PVC based OSDs can be migrated to enable or disable encryption. Refer to the [osd management](../../Storage-Configuration/Advanced/ceph-osd-mgmt.md/#osd-encryption-as-day-2-operation) topic for details.
 
-Allowed configurations are:
+Supported configurations are:
 
 | block device type | host-based cluster                                                                                | PVC-based cluster                                                               |
 | :---------------- | :------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------ |
-| disk              |                                                                                                   |                                                                                 |
+| disk              | supported                                                                                         | supported                                                                         |
 | part              | `encryptedDevice` must be `false`                                                                 | `encrypted` must be `false`                                                     |
 | lvm               | `metadataDevice` must be `""`, `osdsPerDevice` must be `1`, and `encryptedDevice` must be `false` | `metadata.name` must not be `metadata` or `wal` and `encrypted` must be `false` |
-| crypt             |                                                                                                   |                                                                                 |
-| mpath             |                                                                                                   |                                                                                 |
+| crypt             | not supported                                                                                     | supported                                                                         |
+| mpath             | supported                                                                                         | supported                                                                         |
 
 #### Limitations of metadata device
 
@@ -872,14 +872,14 @@ spec:
 ```
 
 The Rook operator will actively apply these values, whereas the
-[ceph.conf settings](../../Storage-Configuration/Advanced/ceph-configuration/#custom-cephconf-settings)
+[ceph.conf settings](../../Storage-Configuration/Advanced/ceph-configuration.md#custom-cephconf-settings)
 only take effect after the Ceph daemon pods are restarted.
 
-If both these `cephConfig` and [ceph.conf settings](../../Storage-Configuration/Advanced/ceph-configuration/#custom-cephconf-settings)
+If both these `cephConfig` and [ceph.conf settings](../../Storage-Configuration/Advanced/ceph-configuration.md#custom-cephconf-settings)
 are applied, the `cephConfig` settings will take higher precedence if there is an overlap.
 
 If Ceph settings need to be applied to mons before quorum is initially created, the
-[ceph.conf settings](../../Storage-Configuration/Advanced/ceph-configuration/#custom-cephconf-settings)
+[ceph.conf settings](../../Storage-Configuration/Advanced/ceph-configuration.md#custom-cephconf-settings)
 should be used instead.
 
 !!! warning
