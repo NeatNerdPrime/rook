@@ -187,11 +187,12 @@ func CreatePoolWithPGs(context *clusterd.Context, clusterInfo *ClusterInfo, clus
 		return errors.New("pool name must be specified")
 	}
 	// Override the application name for built-in pools
-	if pool.Name == ".mgr" {
+	switch pool.Name {
+	case ".mgr":
 		pool.Application = "mgr"
-	} else if pool.Name == ".nfs" {
+	case ".nfs":
 		pool.Application = "nfs"
-	} else if pool.Name == ".rgw.root" {
+	case ".rgw.root":
 		pool.Application = "rgw"
 	}
 
@@ -325,11 +326,11 @@ func setCommonPoolProperties(context *clusterd.Context, clusterInfo *ClusterInfo
 		pool.Parameters = make(map[string]string)
 	}
 
-	if pool.Replicated.IsTargetRatioEnabled() {
+	if _, ok := pool.Parameters[targetSizeRatioProperty]; !ok {
 		pool.Parameters[targetSizeRatioProperty] = strconv.FormatFloat(pool.Replicated.TargetSizeRatio, 'f', -1, 32)
 	}
 
-	if pool.IsCompressionEnabled() {
+	if _, ok := pool.Parameters[CompressionModeProperty]; !ok && pool.CompressionMode != "" {
 		pool.Parameters[CompressionModeProperty] = pool.CompressionMode
 	}
 

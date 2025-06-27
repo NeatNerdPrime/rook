@@ -132,7 +132,7 @@ var (
 // manually challenging.
 var (
 	// image names
-	DefaultCSIPluginImage   = "quay.io/cephcsi/cephcsi:v3.14.0"
+	DefaultCSIPluginImage   = "quay.io/cephcsi/cephcsi:v3.14.1"
 	DefaultRegistrarImage   = "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0"
 	DefaultProvisionerImage = "registry.k8s.io/sig-storage/csi-provisioner:v5.2.0"
 	DefaultAttacherImage    = "registry.k8s.io/sig-storage/csi-attacher:v4.8.1"
@@ -719,6 +719,29 @@ func (r *ReconcileCSI) deleteCSIDriverResources(daemonset, deployment, service, 
 		}
 	}
 
+	return nil
+}
+
+func (r *ReconcileCSI) deleteRookCSICMIfExists() error {
+	logger.Debug("checking for existing rook-ceph-csi-config configmap to delete...")
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ConfigName,
+			Namespace: r.opConfig.OperatorNamespace,
+		},
+	}
+
+	err := r.client.Delete(r.opManagerContext, cm)
+	if err != nil {
+		if kerrors.IsNotFound(err) {
+			logger.Debugf("configmap %q not found. Ignoring since it must already be deleted", ConfigName)
+			return nil
+		}
+		return errors.Wrapf(err, "failed to delete configmap %q in namespace %q", ConfigName, r.opConfig.OperatorNamespace)
+	}
+
+	logger.Infof("successfully deleted configmap %q in namespace %q", ConfigName, r.opConfig.OperatorNamespace)
 	return nil
 }
 
