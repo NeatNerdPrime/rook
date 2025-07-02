@@ -17,7 +17,6 @@ limitations under the License.
 package client
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"strings"
@@ -28,14 +27,17 @@ import (
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
 	"github.com/rook/rook/pkg/client/clientset/versioned/scheme"
 	"github.com/rook/rook/pkg/clusterd"
+	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	testop "github.com/rook/rook/pkg/operator/test"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -83,9 +85,7 @@ func TestGenerateClient(t *testing.T) {
 	}
 
 	client, caps := genClientEntity(p)
-	equal := bytes.Compare([]byte(client), []byte("client.client1"))
-	var res bool = equal == 0
-	assert.True(t, res)
+	assert.Equal(t, []byte(client), []byte("client.client1"))
 	assert.True(t, strings.Contains(strings.Join(caps, " "), "osd allow *"))
 	assert.True(t, strings.Contains(strings.Join(caps, " "), "mon allow rw"))
 	assert.True(t, strings.Contains(strings.Join(caps, " "), "mds allow rwx"))
@@ -102,9 +102,7 @@ func TestGenerateClient(t *testing.T) {
 	}
 
 	client, _ = genClientEntity(p2)
-	equal = bytes.Compare([]byte(client), []byte("client.client2"))
-	res = equal == 0
-	assert.True(t, res)
+	assert.Equal(t, []byte(client), []byte("client.client2"))
 }
 
 func TestCephClientController(t *testing.T) {
@@ -317,5 +315,223 @@ func TestBuildUpdateStatusInfo(t *testing.T) {
 
 	statusInfo := generateStatusInfo(cephClient)
 	assert.NotEmpty(t, statusInfo["secretName"])
-	assert.Equal(t, "rook-ceph-client-client-ocp", statusInfo["secretName"])
+	assert.Equal(t, generateCephUserSecretName(cephClient), statusInfo["secretName"])
+}
+
+func TestRemoveSecretUpdateStatusInfo(t *testing.T) {
+	cephClient := &cephv1.CephClient{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "client-ocp",
+		},
+		Spec: cephv1.ClientSpec{
+			RemoveSecret: true,
+		},
+	}
+
+	statusInfo := generateStatusInfo(cephClient)
+	assert.Empty(t, statusInfo)
+}
+
+func TestCustomSecretname(t *testing.T) {
+	secretName := "test-secret"
+	cephClient := &cephv1.CephClient{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "client-ocp",
+		},
+		Spec: cephv1.ClientSpec{
+			SecretName: secretName,
+		},
+	}
+
+	statusInfo := generateStatusInfo(cephClient)
+	assert.NotEmpty(t, statusInfo["secretName"])
+	assert.Equal(t, secretName, statusInfo["secretName"])
+}
+
+func TestReconcileCephClient_reconcileCephClientSecret(t *testing.T) {
+	ownerController := true
+	tests := []struct {
+		name           string
+		removeSecret   bool
+		existingSecret *v1.Secret
+		expectDelete   bool
+		expectCreate   bool
+		expectUpdate   bool
+		expectError    bool
+	}{
+		{
+			name:         "delete if removeSecret is set and owned by same cephClient",
+			removeSecret: true,
+			existingSecret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "rook-ceph",
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "ceph.rook.io/v1",
+						Kind:       "CephClient",
+						Name:       "test-client",
+						Controller: &ownerController,
+					}},
+				},
+			},
+			expectDelete: true,
+		},
+		{
+			name:         "skip delete if not owned by the current cephClient",
+			removeSecret: true,
+			existingSecret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "client.test",
+					Namespace: "rook-ceph",
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "ceph.rook.io/v1",
+						Kind:       "CephClient",
+						Name:       "another-client",
+						Controller: &ownerController,
+					}},
+				},
+			},
+			expectDelete: false,
+		},
+		{
+			name:           "create if secret not found",
+			removeSecret:   false,
+			existingSecret: nil,
+			expectCreate:   true,
+		},
+		{
+			name:         "update the secret if owned by the cephClient",
+			removeSecret: false,
+			existingSecret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "test-secret",
+					Namespace:       "rook-ceph",
+					ResourceVersion: "123",
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "ceph.rook.io/v1",
+						Kind:       "CephClient",
+						Name:       "test-client",
+						Controller: &ownerController,
+					}},
+				},
+			},
+			expectUpdate: true,
+		},
+		{
+			name:         "error if another ceph client is owned and removeSecret is set",
+			removeSecret: false,
+			existingSecret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "rook-ceph",
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "ceph.rook.io/v1",
+						Kind:       "CephClient",
+						Name:       "another-client",
+						Controller: &ownerController,
+					}},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name:         "update the secret if owned by another resource",
+			removeSecret: false,
+			existingSecret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "test-secret",
+					Namespace:       "rook-ceph",
+					ResourceVersion: "123",
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "ceph.rook.io/v1",
+						Kind:       "CephCluster",
+						Name:       "test-cluster",
+						Controller: &ownerController,
+					}},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name:         "update the secret if there is no owner",
+			removeSecret: false,
+			existingSecret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            "test-secret",
+					Namespace:       "rook-ceph",
+					ResourceVersion: "123",
+				},
+			},
+			expectUpdate: false,
+			expectError:  true,
+		},
+		{
+			name:           "secret already deleted and removeSecret is set",
+			removeSecret:   true,
+			existingSecret: nil,
+			expectDelete:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := k8sfake.NewSimpleClientset()
+			scheme := runtime.NewScheme()
+			assert.NoError(t, cephv1.AddToScheme(scheme))
+			r := &ReconcileCephClient{
+				context: &clusterd.Context{
+					Clientset: client,
+				},
+				scheme: scheme,
+				clusterInfo: &cephclient.ClusterInfo{
+					Context: context.TODO(),
+				},
+			}
+
+			cephClient := &cephv1.CephClient{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-client",
+					Namespace: "rook-ceph",
+				},
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "ceph.rook.io/v1",
+					Kind:       "CephClient",
+				},
+				Spec: cephv1.ClientSpec{
+					RemoveSecret: tt.removeSecret,
+				},
+			}
+
+			secret := &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "rook-ceph",
+				},
+				StringData: map[string]string{"foo": "bar"},
+			}
+
+			if tt.existingSecret != nil {
+				_, err := client.CoreV1().Secrets("rook-ceph").Create(context.TODO(), tt.existingSecret, metav1.CreateOptions{})
+				require.NoError(t, err)
+			}
+
+			err := r.reconcileCephClientSecret(cephClient, secret)
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			secrets, _ := client.CoreV1().Secrets("rook-ceph").List(context.TODO(), metav1.ListOptions{})
+			if tt.expectDelete {
+				assert.Empty(t, secrets.Items)
+			}
+			if tt.expectCreate {
+				assert.Len(t, secrets.Items, 1)
+			}
+			if tt.expectUpdate {
+				assert.Equal(t, "bar", secrets.Items[0].StringData["foo"])
+			}
+		})
+	}
 }
