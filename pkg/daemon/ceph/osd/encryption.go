@@ -68,14 +68,7 @@ func setKEKinEnv(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo)
 	// KMS details are passed by the Operator as env variables in the pod
 	// The token if any is mounted in the provisioner pod as an env variable so the secrets lib will
 	// pick it up
-	clusterSpec := &v1.ClusterSpec{Security: v1.SecuritySpec{KeyManagementService: v1.KeyManagementServiceSpec{ConnectionDetails: kms.ConfigEnvsToMapString()}}}
-
-	// If KMS is not enabled this code does not need to run since we attach the KEK value from the
-	// Kubernetes Secret in the provision pod spec (mounted as an environment variable)
-	if !clusterSpec.Security.KeyManagementService.IsEnabled() {
-		logger.Debug("cluster-wide encryption is enabled with kubernetes secrets and the kek is attached to the provision env spec")
-		return nil
-	}
+	clusterSpec := &v1.ClusterSpec{Security: v1.ClusterSecuritySpec{KeyManagementService: v1.KeyManagementServiceSpec{ConnectionDetails: kms.ConfigEnvsToMapString()}}}
 
 	// The ibm key protect library does not read any environment variables, so we must set the
 	// service api key (coming from the secret mounted as environment variable) in the KMS
@@ -289,7 +282,7 @@ func addEncryptionKey(context *clusterd.Context, disk, passphrase, newPassphrase
 		disk, output)
 }
 
-func removeEncryptedDevice(context *clusterd.Context, target string) error {
+func RemoveEncryptedDevice(context *clusterd.Context, target string) error {
 	args := []string{"remove", "--force", target}
 	output, err := context.Executor.ExecuteCommandWithTimeout(removeEncryptedDeviceCmdTimeOut, "dmsetup", args...)
 	// ignore error if no device was found.

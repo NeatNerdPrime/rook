@@ -94,7 +94,7 @@ type ClusterController struct {
 	OpManagerCtx   context.Context
 }
 
-// ReconcileCephCluster reconciles a CephFilesystem object
+// ReconcileCephCluster reconciles a CephCluster object
 type ReconcileCephCluster struct {
 	client            client.Client
 	scheme            *apituntime.Scheme
@@ -382,6 +382,13 @@ func (c *ClusterController) reconcileCephCluster(clusterObj *cephv1.CephCluster,
 	if clusterObj.Spec.CleanupPolicy.HasDataDirCleanPolicy() {
 		logger.Infof("skipping orchestration for cluster object %q in namespace %q because its cleanup policy is set", clusterObj.Name, clusterObj.Namespace)
 		return nil
+	}
+
+	if clusterObj.Status.Cephx == nil {
+		err := initClusterCephxStatus(c.context, clusterObj)
+		if err != nil {
+			return errors.Wrap(err, "failed to initialized cluster cephx status")
+		}
 	}
 
 	cluster, ok := c.clusterMap[clusterObj.Namespace]

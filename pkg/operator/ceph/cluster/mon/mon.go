@@ -45,7 +45,6 @@ import (
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -133,7 +132,7 @@ type Cluster struct {
 	isUpgrade          bool
 	arbiterMon         string
 	// list of mons to be failed over
-	monsToFailover sets.Set[string]
+	monsToFailover map[string]*monConfig
 }
 
 // monConfig for a single monitor
@@ -160,7 +159,7 @@ type monConfig struct {
 }
 
 type SchedulingResult struct {
-	Node             *v1.Node
+	Node             *corev1.Node
 	CanaryDeployment *apps.Deployment
 	CanaryPVC        string
 }
@@ -181,7 +180,7 @@ func New(ctx context.Context, clusterdContext *clusterd.Context, namespace strin
 		ClusterInfo: &cephclient.ClusterInfo{
 			Context: ctx,
 		},
-		monsToFailover: sets.New[string](),
+		monsToFailover: map[string]*monConfig{},
 	}
 }
 
@@ -551,7 +550,7 @@ func (c *Cluster) initClusterInfo(cephVersion cephver.CephVersion, clusterName s
 
 	k := keyring.GetSecretStore(c.context, c.ClusterInfo, c.ownerInfo)
 	// store the keyring which all mons share
-	if err := k.CreateOrUpdate(keyringStoreName, c.genMonSharedKeyring()); err != nil {
+	if _, err := k.CreateOrUpdate(keyringStoreName, c.genMonSharedKeyring()); err != nil {
 		return errors.Wrap(err, "failed to save mon keyring secret")
 	}
 	// also store the admin keyring for other daemons that might need it during init
@@ -695,7 +694,7 @@ func scheduleMonitor(c *Cluster, mon *monConfig) (*apps.Deployment, error) {
 	// the canary and real monitor deployments will mount the same storage. to
 	// avoid issues with the real deployment, the canary should be careful not
 	// to modify the storage by instead running an innocuous command.
-	d.Spec.Template.Spec.InitContainers = []v1.Container{}
+	d.Spec.Template.Spec.InitContainers = []corev1.Container{}
 	d.Spec.Template.Spec.Containers[0].Image = c.rookImage
 	d.Spec.Template.Spec.Containers[0].Command = []string{"sleep"} // sleep responds to signals so we don't need to wrap it
 	d.Spec.Template.Spec.Containers[0].Args = []string{"3600"}
@@ -992,7 +991,7 @@ func (c *Cluster) assignMons(mons []*monConfig) error {
 	return nil
 }
 
-func (c *Cluster) monVolumeClaimTemplate(mon *monConfig) *v1.PersistentVolumeClaim {
+func (c *Cluster) monVolumeClaimTemplate(mon *monConfig) *corev1.PersistentVolumeClaim {
 	if c.spec.ZonesRequired() {
 		// If a stretch cluster, a zone can override the template from the default.
 
@@ -1325,7 +1324,7 @@ func (c *Cluster) createEndpointSliceForAddresses(addresses []string, addressTyp
 }
 
 func (c *Cluster) persistExpectedMonDaemonsInConfigMap() error {
-	configMap := &v1.ConfigMap{
+	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       EndpointConfigMapName,
 			Namespace:  c.Namespace,
@@ -1558,13 +1557,13 @@ func (c *Cluster) startMon(m *monConfig, schedule *controller.MonScheduleInfo) e
 	if deploymentExists {
 		// skip update if mon path has changed
 		if hasMonPathChanged(existingDeployment, c.spec.Mon.VolumeClaimTemplate.ToPVC()) {
-			c.monsToFailover.Insert(m.DaemonName)
+			c.monsToFailover[m.DaemonName] = m
 			return nil
 		}
 
 		// skip update if mon fail over is required due to change in hostnetwork settings
 		if isMonIPUpdateRequiredForHostNetwork(m.DaemonName, m.UseHostNetwork, &c.spec.Network) {
-			c.monsToFailover.Insert(m.DaemonName)
+			c.monsToFailover[m.DaemonName] = m
 			return nil
 		}
 
@@ -1652,7 +1651,7 @@ func isMonIPUpdateRequiredForHostNetwork(mon string, isMonUsingHostNetwork bool,
 	return false
 }
 
-func hasMonPathChanged(d *apps.Deployment, claim *v1.PersistentVolumeClaim) bool {
+func hasMonPathChanged(d *apps.Deployment, claim *corev1.PersistentVolumeClaim) bool {
 	if d.Labels["pvc_name"] == "" && claim != nil {
 		logger.Infof("skipping update for mon %q where path has changed from hostPath to pvc", d.Name)
 		return true

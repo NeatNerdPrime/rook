@@ -34,7 +34,6 @@ import (
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	clienttest "github.com/rook/rook/pkg/daemon/ceph/client/test"
 	"github.com/rook/rook/pkg/operator/ceph/config"
-	"github.com/rook/rook/pkg/operator/ceph/controller"
 	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	cephver "github.com/rook/rook/pkg/operator/ceph/version"
 	"github.com/rook/rook/pkg/operator/k8sutil"
@@ -46,7 +45,6 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/ptr"
 )
 
@@ -125,7 +123,7 @@ func newCluster(context *clusterd.Context, namespace string, allowMultiplePerNod
 			Schedule: map[string]*opcontroller.MonScheduleInfo{},
 		},
 		ownerInfo:      ownerInfo,
-		monsToFailover: sets.New[string](),
+		monsToFailover: map[string]*monConfig{},
 	}
 }
 
@@ -1081,7 +1079,7 @@ func TestSkipReconcile(t *testing.T) {
 	deployment, err := c.context.Clientset.AppsV1().Deployments(c.ClusterInfo.Namespace).Create(c.ClusterInfo.Context, monDeployment, metav1.CreateOptions{})
 	assert.NoError(t, err)
 
-	result, err := controller.GetDaemonsToSkipReconcile(c.ClusterInfo.Context, c.context, c.ClusterInfo.Namespace, config.MonType, AppName)
+	result, err := opcontroller.GetDaemonsToSkipReconcile(c.ClusterInfo.Context, c.context, c.ClusterInfo.Namespace, config.MonType, AppName)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, result.Len())
 
@@ -1092,7 +1090,7 @@ func TestSkipReconcile(t *testing.T) {
 	_, err = c.context.Clientset.AppsV1().Deployments(c.ClusterInfo.Namespace).Update(c.ClusterInfo.Context, deployment, metav1.UpdateOptions{})
 	assert.NoError(t, err)
 
-	result, err = controller.GetDaemonsToSkipReconcile(c.ClusterInfo.Context, c.context, c.ClusterInfo.Namespace, config.MonType, AppName)
+	result, err = opcontroller.GetDaemonsToSkipReconcile(c.ClusterInfo.Context, c.context, c.ClusterInfo.Namespace, config.MonType, AppName)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, result.Len())
 }

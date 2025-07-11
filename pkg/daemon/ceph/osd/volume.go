@@ -853,6 +853,89 @@ func (a *OsdAgent) appendDeviceClassArg(device *DeviceOsdIDEntry, args []string)
 	return args
 }
 
+// WipeDevicesFromOtherClusters wipes the OSD backed disks if they have metadata from a different ceph cluster.
+// The wiped disks can then be used to prepare OSDs for the current ceph cluster.
+func (a *OsdAgent) WipeDevicesFromOtherClusters(context *clusterd.Context) error {
+	args := []string{"raw", "list", "--format", "json"}
+
+	result, err := callCephVolume(context, args...)
+	if err != nil {
+		return errors.Wrapf(err, "failed to retrieve ceph-volume raw list results")
+	}
+
+	var existingOSDs map[string]osdInfoBlock
+	err = json.Unmarshal([]byte(result), &existingOSDs)
+	if err != nil {
+		return errors.Wrapf(err, "failed to unmarshal ceph-volume raw list results")
+	}
+
+	if len(existingOSDs) == 0 {
+		logger.Info("no existing OSDs were found. No disks to be wiped")
+		return nil
+	}
+
+	for _, existingOSD := range existingOSDs {
+		// Wipe the devices that will be used for preparing OSD but already have OSD metadata from another ceph cluster
+		if existingOSD.CephFsid != a.clusterInfo.FSID {
+			osdID := existingOSD.OsdID
+			deviceToWipe := existingOSD.Device
+			osdDisk, encryptedBlock, err := getOSDDiskToBeWiped(context, existingOSD.Device)
+			if err != nil {
+				return errors.Wrapf(err, "failed to get the actual device path to be wiped for existing OSD %d with path %q", osdID, osdDisk.RealPath)
+			}
+			if osdDisk != nil {
+				deviceToWipe := osdDisk.RealPath
+				if encryptedBlock != "" {
+					err = RemoveEncryptedDevice(context, encryptedBlock)
+					if err != nil {
+						logger.Warningf("failed to remove stale dm device %q: %q", encryptedBlock, err)
+						continue
+					}
+				}
+				logger.Infof("begin wiping OSD %d device %q belonging to a different ceph cluster %q ", osdID, deviceToWipe, existingOSD.CephFsid)
+				logger.Infof("zap OSD.%d on device path %q", osdID, deviceToWipe)
+				output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", cephVolumeCmd, "lvm", "zap", deviceToWipe)
+				if err != nil {
+					return errors.Wrapf(err, "failed to zap osd.%d path %q. %s.", osdID, deviceToWipe, output)
+				}
+				logger.Infof("ceph-volume output: %s", output)
+				logger.Infof("successfully zapped osd.%d path %q", osdID, deviceToWipe)
+				logger.Infof("completed wiping OSD %d device %q belonging to a different ceph cluster", osdID, deviceToWipe)
+				// Since the device is wiped clean, clear the stale filesystem reference on the disk so that the wiped disk is not filtered out for filesystem check.
+				osdDisk.Filesystem = ""
+			} else {
+				logger.Infof("skip wiping OSD %d device %q belonging to a different ceph cluster %q since not a desired device", osdID, deviceToWipe, existingOSD.CephFsid)
+			}
+		}
+	}
+
+	return nil
+}
+
+// getOSDDiskToBeWiped returns OSD disk path and the dmcrypt block in case of encrypted OSDs
+func getOSDDiskToBeWiped(context *clusterd.Context, existingOSDDevice string) (*sys.LocalDisk, string, error) {
+	var err error
+	var encryptedBlock string
+	// encrypted OSDs have /dev/mapper/* entries. Find the real device path in case of encrypted OSDs
+	if strings.Contains(existingOSDDevice, "mapper") {
+		encryptedBlock = existingOSDDevice
+		existingOSDDevice, err = GetBackingDeviceForEncryptedBlock(context, existingOSDDevice)
+		if err != nil {
+			logger.Warningf("failed to get actual device used for the dmcrypt block %q: %q", encryptedBlock, err)
+			return nil, "", nil
+		}
+		logger.Infof("%q is the actual disk behind the %q encrypted block", existingOSDDevice, encryptedBlock)
+	}
+
+	var osdDisk *sys.LocalDisk
+	for _, desiredDevice := range context.Devices {
+		if desiredDevice.RealPath == existingOSDDevice {
+			osdDisk = desiredDevice
+		}
+	}
+	return osdDisk, encryptedBlock, nil
+}
+
 func lvmPreReq(context *clusterd.Context) error {
 	// Check for the presence of LVM on the host when NOT running on PVC
 	// since this scenario is still using LVM
@@ -1047,7 +1130,7 @@ func GetCephVolumeRawOSDs(context *clusterd.Context, clusterInfo *client.Cluster
 
 				target := oposd.EncryptionDMName(pvcName, oposd.DmcryptBlockType)
 				// remove stale dm device left by previous OSD.
-				err = removeEncryptedDevice(context, target)
+				err = RemoveEncryptedDevice(context, target)
 				if err != nil {
 					logger.Warningf("failed to remove stale dm device %q: %q", target, err)
 				}
@@ -1279,4 +1362,26 @@ func isInOSDInfoList(uuid string, osds []oposd.OSDInfo) bool {
 	}
 
 	return false
+}
+
+func GetBackingDeviceForEncryptedBlock(context *clusterd.Context, disk string) (string, error) {
+	output, err := context.Executor.ExecuteCommandWithOutput(cryptsetupBinary, "status", disk, "-v")
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to run cryptsetup status on %s", disk)
+	}
+
+	// Example output line: "device:  /dev/sdb1"
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "device:") {
+			parts := strings.Fields(line)
+			logger.Infof("parts: %s", parts)
+			if len(parts) == 2 {
+				return parts[1], nil
+			}
+		}
+	}
+
+	return "", errors.Errorf("failed to find backing device for encrypted block %q", disk)
 }
